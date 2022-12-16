@@ -1,0 +1,987 @@
+---
+title: "Model 1"
+author: "Leonard Dwight Soledad"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+
+
+
+
+```{r}
+# Helper packages
+library(rsample)   # for creating our train-test splits
+library(recipes)   # for minor feature engineering tasks
+library(tidyverse)
+library(readr)
+library(dplyr)    # for general data wrangling needs
+library(ggplot2)  # for awesome graphics
+library(bestNormalize)
+
+
+# Modeling packages
+library(h2o)       # for fitting stacked models
+library(ROCR)
+library(pROC)
+library(gbm)      # for original implementation of regular and stochastic GBMs
+library(xgboost)  # for fitting extreme gradient boosting
+library(caret)    # for classification and regression training
+library(kernlab)  # for fitting SVMs
+library(modeldata) #for Failure.binary data
+library(forcats)
+# Model interpretability packages
+library(pdp)      # for partial dependence plots, etc.
+library(vip)      # for variable importance plots
+h2o.init()
+```
+
+  *Data Reprocessing*
+
+```{r}
+Model1rawdataf <- read_csv("radiomics_completedata.csv")
+Model1rawdataf
+```
+
+
+
+#   Checking for null and missing values
+#   We are using *anyNA()* function to determine if there is any missing value in the data.
+```{r}
+
+anyNA(Model1rawdataf)
+
+#The output will show either *True* or *False*. There are missing values If True, thus you have to omit the missing values using *na.omit()*. Otherwise, False.
+  
+#[1] FALSE
+
+# The result is False, hence, the data has no missing values.
+```
+
+*Checking the Normality of the Data*
+We are using *Shapiro-Wilk's Test* to check the normality of the data.
+
+```{r,warning=F}
+
+Model1numrawdataf <- Model1rawdataf%>%select_if(is.numeric) 
+
+Model1numrawdataf <- Model1numrawdataf[ , -1]
+
+Model1SWtestf <- apply(Model1numrawdataf, 2, function(x){shapiro.test(x)})
+```
+
+
+Next we need to list only the p-value of the respective variables to proceed with the test. We are using the *unlist()* and *lapply()* functions to achieve this goal.
+
+```{r}
+
+Model1DRpvaluef <- unlist(lapply(Model1SWtestf, function(x) x$p.value))
+
+```
+
+
+```{r}
+
+sum(Model1DRpvaluef<0.05)  # not normally distributed
+sum(Model1DRpvaluef>0.05)  # normally distributed
+Model1SWtestf$Entropy_cooc.W.ADC
+
+# [1] 428
+# [1] 1
+
+#  Currently, there are 428 variables that are not normally distributed and only the Entropy_cooc.W.ADC is normally distributed.
+```
+
+The goal is that all variables should be normally distributed.
+Next, we are using *orderNorm()* function. And we need to exclude the *Entropy_cooc.W.ADC* since it is already normally distributed.
+
+```{r,warning=F}
+Model1DRtransrawdataf <- Model1rawdataf[,c(3,5:length(names(Model1rawdataf)))]
+
+Model1DRtransrawdataf <- apply(Model1DRtransrawdataf,2,orderNorm)
+
+Model1DRtransrawdataf <- lapply(Model1DRtransrawdataf, function(x) x$x.t)
+
+Model1DRtransrawdataf <- Model1DRtransrawdataf%>%as.data.frame()
+
+Model1SWtestf <- apply(Model1DRtransrawdataf,2,shapiro.test)
+
+Model1SWtestf <- unlist(lapply(Model1SWtestf, function(x) x$p.value))
+```
+
+Next, we will be testing the data to check the normality or the transformed data.
+```{r,warning=F}
+sum(Model1SWtestf <0.05)  # for not normally distributed
+sum(Model1SWtestf >0.05)  # for normally distributed
+
+#[1] 0
+#[1] 428
+
+# Now, the 428 variables that were initially not normally distributed are now normally distributed.
+```
+
+
+```{r}
+
+Model1rawdataf[,c(3,5:length(names(Model1rawdataf)))]=Model1DRtransrawdataf
+
+```
+
+We are getting the correlation of the whole data except the categorical variables
+```{r}
+
+Model1CorrMatf = cor(Model1rawdataf[,-c(1,2)])
+heatmap(Model1CorrMatf,Rowv=NA,Colv=NA,scale="none",revC = T)
+
+```
+
+Finally, we will convert the data frame output of data reprocessing into "csv" file, which will we use for the entire Final Project.
+
+```{r}
+library(data.table)
+
+fwrite(Model1rawdataf, "Model1_Final_Project_Data.csv")
+```
+
+Lastly, let's check if the dataframe we have exported to CSV is really the normal data.
+```{r}
+Model1rawdata1f <- read_csv("Model1_Final_Project_Data.csv")
+Model1rawdata1f
+
+Model1numrawdata1f <- Model1rawdata1f%>%select_if(is.numeric) 
+
+Model1numrawdata1f <- Model1numrawdata1f[ , -1]
+
+Model1SWtest1f <- apply(Model1numrawdata1f, 2, function(y){shapiro.test(y)})
+
+Model1DRpvalue1f <- unlist(lapply(Model1SWtest1f, function(y) y$p.value))
+
+sum(Model1DRpvalue1f<0.05)  # not normally distributed
+sum(Model1DRpvalue1f>0.05)  # normally distributed
+
+#Yes! We were able to produce the correct CSV file and we are now ready to use it for the entire project.
+```
+
+
+
+--------_Stacking_---------
+
+
+
+
+
+1. Stacking Ensemble
+
+Stacking is a ensemble learning method that consolidate multiple machine learning algorithms via meta learning, In which base level algorithms are trained based on a complete training data-set, them meta model is trained on the final outcomes of the all base level model as feature. We have deal with bagging and boosting method for handling bias and variance. Now we can learn stacking which is improve the your model prediction accuracy.
+
+```{r}
+h2o.init()
+```
+
+
+```{r}
+set.seed(123)  # for reproducibility
+Stackrdata<- read_csv("Model1_Final_Project_Data.csv")
+Stackrdata$Failure.binary=as.factor(Stackrdata$Failure.binary)
+Stackrdata
+
+Stackrdatasplit <- initial_split(Stackrdata, strata = "Failure.binary")
+Stackrdatatrain <- training(Stackrdatasplit)
+Stackrdatatest <- testing(Stackrdatasplit)
+```
+
+
+```{r}
+# Make sure we have consistent categorical levels
+Stackrdatablueprints <- recipe(Failure.binary ~ ., data = Stackrdatatrain) %>%
+  step_other(all_nominal(), threshold = 0.005)
+
+# Create training & test sets for h2o
+h2o.init()
+Stackrdatah2otrain <- prep(Stackrdatablueprints, training = Stackrdatatrain, retain = TRUE) %>%
+  juice() %>%
+  as.h2o()
+Stackrdatah2otest <- prep(Stackrdatablueprints, training = Stackrdatatrain) %>%
+  bake(new_data = Stackrdatatest) %>%
+  as.h2o()
+
+# Get response and feature names
+StackrdatafY <- "Failure.binary"
+```
+
+
+```{r}
+StackrdatafX <- setdiff(names(Stackrdatatrain), StackrdatafY)
+
+# Train & cross-validate a GLM model
+Stackrdatafbestglm <- h2o.glm(
+  x = StackrdatafX, y = StackrdatafY, training_frame = Stackrdatah2otrain, alpha = 0.1,
+  remove_collinear_columns = TRUE, nfolds = 10, fold_assignment = "Modulo",
+  keep_cross_validation_predictions = TRUE, seed = 123
+)
+```
+
+
+```{r}
+# Train & cross-validate a RF model
+Stackrdatafbestrf <- h2o.randomForest(
+  x = StackrdatafX, y = StackrdatafY, training_frame = Stackrdatah2otrain, ntrees = 1000, mtries = 20,
+  max_depth = 30, min_rows = 1, sample_rate = 0.8, nfolds = 10,
+  fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE,
+  seed = 123, stopping_rounds = 50, stopping_metric = "logloss",
+  stopping_tolerance = 0
+)
+```
+
+
+```{r}
+# Train & cross-validate a GBM model
+Stackrdatafbestgbms <- h2o.gbm(
+  x = StackrdatafX, y = StackrdatafY, training_frame = Stackrdatah2otrain, ntrees = 1000, learn_rate = 0.01,
+  max_depth = 7, min_rows = 5, sample_rate = 0.8, nfolds = 10,
+  fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE,
+  seed = 123, stopping_rounds = 50, stopping_metric = "logloss",
+  stopping_tolerance = 0
+)
+```
+
+
+```{r}
+# Get results from base learners
+Stackrdatafrmseget <- function(model) {
+  results <- h2o.performance(model, newdata = Stackrdatah2otest)
+  results@metrics$RMSE
+}
+list(Stackrdatafbestglm, Stackrdatafbestrf, Stackrdatafbestgbms) %>%
+  purrr::map_dbl(Stackrdatafrmseget)
+## [1] 30024.67 23075.24 20859.92 21391.20
+```
+
+```{r}
+# Define GBM hyperparameter grid
+StackrdatafHyperGrid <- list(
+  max_depth = c(1, 3, 5),
+  min_rows = c(1, 5, 10),
+  learn_rate = c(0.01, 0.05, 0.1),
+  learn_rate_annealing = c(0.99, 1),
+  sample_rate = c(0.5, 0.75, 1),
+  col_sample_rate = c(0.8, 0.9, 1)
+)
+
+# Define random grid search criteria
+StackrdatafSearchCrit <- list(
+  strategy = "RandomDiscrete",
+  max_models = 25
+)
+```
+
+
+```{r}
+# Build random grid search 
+Stackrdatafrangrid <- h2o.grid(
+  algorithm = "gbm", grid_id = "gbm_grid", x = StackrdatafX, y = StackrdatafY,
+  training_frame = Stackrdatah2otrain, hyper_params = StackrdatafHyperGrid,
+  search_criteria = StackrdatafSearchCrit, ntrees = 20, stopping_metric = "logloss",     
+  stopping_rounds = 10, stopping_tolerance = 0, nfolds = 10, 
+  fold_assignment = "Modulo", keep_cross_validation_predictions = TRUE,
+  seed = 123
+)
+```
+
+
+
+```{r}
+Stackrdatafensemblegrid <- h2o.stackedEnsemble(
+  x = StackrdatafX, y = StackrdatafY, training_frame = Stackrdatah2otrain, model_id = "ensemble_gbm_grid",
+  base_models = Stackrdatafrangrid@model_ids, metalearner_algorithm = "gbm",
+)
+```
+
+
+```{r}
+# Stacked results
+h2o.performance(Stackrdatafensemblegrid, newdata = Stackrdatah2otest)@metrics$RMSE
+## [1] 20664.56
+
+data.frame(
+  GLM_pred = as.vector(h2o.getFrame(Stackrdatafbestglm@model$cross_validation_holdout_predictions_frame_id$name))%>%as.numeric(),
+  RF_pred = as.vector(h2o.getFrame(Stackrdatafbestrf@model$cross_validation_holdout_predictions_frame_id$name))%>%as.numeric(),
+  GBM_pred = as.vector(h2o.getFrame(Stackrdatafbestgbms@model$cross_validation_holdout_predictions_frame_id$name))%>%as.numeric()
+) %>% cor()
+```
+
+
+```{r}
+# Sort results by RMSE
+h2o.getGrid(
+  grid_id = "gbm_grid", 
+  sort_by = "logloss"
+)
+
+random_grid_perf <- h2o.getGrid(
+  grid_id = "gbm_grid", 
+  sort_by = "logloss"
+)
+```
+
+
+```{r}
+# Grab the model_id for the top model, chosen by validation error
+Stackrdatafbestmodid <- random_grid_perf@model_ids[[1]]
+Stackrdatafbestmodf <- h2o.getModel(Stackrdatafbestmodid)
+h2o.performance(Stackrdatafbestmodf, newdata = Stackrdatah2otest)
+```
+
+
+```{r}
+# Train a stacked ensemble using the GBM grid
+Stackrdatafensembles <- h2o.stackedEnsemble(
+  x = StackrdatafX, y = StackrdatafY, training_frame = Stackrdatah2otrain, model_id = "ensemble_gbm_grid",
+  base_models = Stackrdatafrangrid@model_ids, metalearner_algorithm = "gbm"
+)
+```
+
+
+```{r}
+# Eval ensemble performance on a test set
+h2o.performance(Stackrdatafensembles, newdata = Stackrdatah2otest)
+```
+
+
+```{r}
+# Use AutoML to find a list of candidate models (i.e., leaderboard)
+Stackrdatafautoml <- h2o.automl(
+  x = StackrdatafX, y = StackrdatafY, training_frame = Stackrdatah2otrain, nfolds = 5, 
+  max_runtime_secs = 60 * 120, max_models = 10,#max_models=50
+  keep_cross_validation_predictions = TRUE, sort_metric = "logloss", seed = 123,
+  stopping_rounds = 10, stopping_metric = "logloss", stopping_tolerance = 0
+)
+```
+
+
+```{r}
+# Assess the leader board; the following truncates the results to show the top 
+# and bottom 15 models. You can get the top model with Stackrdatafautoml@leader
+Stackrdatafautoml@leaderboard %>% 
+  as.data.frame() %>%
+  dplyr::select(model_id, logloss) %>%
+  dplyr::slice(1:25)
+
+```
+
+
+```{r}
+# Compute predicted probabilities on training data
+Stackrdatah2otrain=as.h2o(Stackrdatatrain)
+Stackrdatafmod1prob <- predict(Stackrdatafautoml@leader, Stackrdatah2otrain, type = "prob")
+Stackrdatafmod1prob=as.data.frame(Stackrdatafmod1prob)[,2]
+Stackrdatah2otrain=as.data.frame(Stackrdatah2otrain)
+# Compute AUC metrics for cv_model1,2 and 3 
+Stackrdatafperf1 <- prediction(Stackrdatafmod1prob,Stackrdatah2otrain$Failure.binary) %>%
+  performance(measure = "tpr", x.measure = "fpr")
+
+
+# Plot ROC curves for cv_model1,2 and 3 
+plot(Stackrdatafperf1, col = "black", lty = 2)
+
+
+# ROC plot for training data
+roc( Stackrdatah2otrain$Failure.binary ~ Stackrdatafmod1prob, plot=TRUE, legacy.axes=FALSE, 
+    percent=TRUE, col="black", lwd=2, print.auc=TRUE)
+
+
+# 
+# #Feature Interpretation
+# vip(cv_model3, num_features = 20)
+
+# Compute predicted probabilities on training data
+Stackrdatah2otest=as.h2o(Stackrdatatest)
+
+Stackrdatafmod2prob <- predict(Stackrdatafautoml@leader, Stackrdatah2otest, type = "prob")
+
+Stackrdatafmod2prob=as.data.frame(Stackrdatafmod2prob)[,2]
+
+Stackrdatah2otest=as.data.frame(Stackrdatah2otest)
+
+# Compute AUC metrics for cv_model1,2 and 3 
+Stackrdatafperf2 <- prediction(Stackrdatafmod2prob,Stackrdatah2otest$Failure.binary) %>%
+  performance(measure = "tpr", x.measure = "fpr")
+
+
+# Plot ROC curves for cv_model1,2 and 3 
+plot(Stackrdatafperf2, col = "black", lty = 2)
+
+
+# ROC plot for training data
+roc( Stackrdatah2otest$Failure.binary ~ Stackrdatafmod2prob, plot=TRUE, legacy.axes=FALSE, 
+    percent=TRUE, col="black", lwd=2, print.auc=TRUE)
+
+```
+
+```{r}
+Stackrdatah2otest=as.h2o(Stackrdatah2otest)
+h2o.permutation_importance_plot(Stackrdatafautoml@leader,Stackrdatah2otest,num_of_features = 20)
+```
+
+
+
+
+
+
+-------_Gradient Boosting_-------
+
+
+
+
+2. Gradient Boosting
+
+Gradient Boosting is a system of machine learning boosting, rendering a decision tree for large and complex data. It banks on the premise that the next potential model will extenuate the gross prediction error if consolidated with the preceding set of models. The decision trees are utilized for the best potential predictions. 
+
+```{r}
+# run a basic GBM model
+set.seed(123)  # for reproducibility
+GBrdata<- read_csv("Model1_Final_Project_Data.csv")
+
+
+GBrdata$Institution=as.factor(GBrdata$Institution)
+GBrsplit <- initial_split(GBrdata, strata = "Failure.binary")
+GBrdatatrain <- training(GBrsplit)
+GBrdatatest <- testing(GBrsplit)
+```
+
+
+```{r}
+GBrdatamodelf1 <- gbm(
+  formula = Failure.binary ~ .,
+  data = GBrdatatrain,
+  distribution = "bernoulli",  # SSE loss function
+  n.trees = 2500,
+  shrinkage = 0.1,
+  n.minobsinnode = 10,
+  cv.folds = 10
+
+)
+```
+
+
+
+```{r}
+# find index for number trees with minimum CV error
+GBrdatabestf <- which.min(GBrdatamodelf1$cv.error)
+```
+
+
+```{r}
+# get MSE and compute RMSE
+sqrt(GBrdatamodelf1$cv.error[GBrdatabestf])
+```
+
+
+```{r}
+# plot error curve
+gbm.perf(GBrdatamodelf1, method = "cv")
+```
+
+
+```{r}
+# create grid search
+GBrdataHyperGrid <- expand.grid(
+  learning_rate = c(0.3, 0.1, 0.05, 0.01, 0.005),
+  logloss = NA,
+  trees = NA,
+  time = NA
+)
+
+# execute grid search
+for(i in seq_len(nrow(GBrdataHyperGrid))) {
+  
+  # fit gbm
+  set.seed(123)  # for reproducibility
+  GBrdatatimetrain <- system.time({
+    GBrdatafm <- gbm(
+      formula = Failure.binary ~ .,
+      data = GBrdatatrain,
+      distribution = "bernoulli",
+      n.trees = 500, 
+      shrinkage = GBrdataHyperGrid$learning_rate[i], 
+      interaction.depth = 3, 
+      n.minobsinnode = 10,
+      cv.folds = 10 
+    )
+  })
+  
+  # add SSE, trees, and training time to results
+  GBrdataHyperGrid$logloss[i]  <- sqrt(min(GBrdatafm$cv.error))
+  GBrdataHyperGrid$trees[i] <- which.min(GBrdatafm$cv.error)
+  GBrdataHyperGrid$Time[i]  <- GBrdatatimetrain[["elapsed"]]
+  
+}
+```
+
+
+```{r}
+# results
+arrange(GBrdataHyperGrid, logloss)
+```
+
+
+
+```{r}
+# search grid
+GBrdataHyperGrid <- expand.grid(
+  n.trees = 500,
+  shrinkage = 0.01,
+  interaction.depth = c(3, 5, 7),
+  n.minobsinnode = c(5, 10, 15)
+
+)
+```
+
+
+```{r}
+# create model fit function
+GBrdatafitmodel <- function(n.trees, shrinkage, interaction.depth, n.minobsinnode) {
+  set.seed(123)
+  GBrdatafm <- gbm(
+    formula = Failure.binary ~ .,
+    data = GBrdatatrain,
+    distribution = "bernoulli",
+    n.trees = n.trees,
+    shrinkage = shrinkage,
+    interaction.depth = interaction.depth,
+    n.minobsinnode = n.minobsinnode,
+    cv.folds = 10
+  )
+  # compute RMSE
+  sqrt(min(GBrdatafm$cv.error))
+
+}
+```
+
+
+```{r}
+# perform search grid with functional programming
+GBrdataHyperGrid$logloss <- purrr::pmap_dbl(
+  GBrdataHyperGrid,
+  ~ GBrdatafitmodel(
+    n.trees = ..1,
+    shrinkage = ..2,
+    interaction.depth = ..3,
+    n.minobsinnode = ..4
+  )
+)
+
+# results
+arrange(GBrdataHyperGrid, logloss)
+```
+
+
+```{r}
+# refined hyperparameter grid
+GBrdataHyperGrid <- list(
+  sample_rate = c(0.5, 0.75, 1),              # row subsampling
+  col_sample_rate = c(0.5, 0.75, 1),          # col subsampling for each split
+  col_sample_rate_per_tree = c(0.5, 0.75, 1)  # col subsampling for each tree
+)
+
+# random grid search strategy
+GBrdatasearchcrit <- list(
+  strategy = "RandomDiscrete",
+  stopping_metric = "logloss",
+  stopping_tolerance = 0.001,   
+  stopping_rounds = 10,         
+  max_runtime_secs = 60*60      
+)
+```
+
+
+```{r}
+# perform grid search 
+GBrdatatrain$Failure.binary=as.factor(GBrdatatrain$Failure.binary)
+h2o.shutdown()
+h2o.init()
+GBrdatafgrid <- h2o.grid(
+  algorithm = "gbm",
+  grid_id = "gbm_grid",
+  y = "Failure.binary",
+  training_frame = as.h2o(GBrdatatrain),
+  hyper_params = GBrdataHyperGrid,
+  ntrees = 10,#supposedly 6000
+  learn_rate = 0.01,
+  max_depth = 7,
+  min_rows = 5,
+  nfolds = 10,
+  stopping_rounds = 10,
+  stopping_tolerance = 0,
+  stopping_metric="logloss",
+  search_criteria = GBrdatasearchcrit,
+  seed = 123
+
+)
+```
+
+
+```{r}
+# collect the results and sort by our model performance metric of choice
+GBrdatafgridperformance <- h2o.getGrid(
+  grid_id = "gbm_grid", 
+  sort_by = "logloss", 
+  decreasing = FALSE
+)
+```
+
+
+```{r}
+GBrdatafgridperformance
+```
+
+
+```{r}
+# Grab the model_id for the top model, chosen by cross validation error
+GBrdatafbestmodid <- GBrdatafgridperformance@model_ids[[1]]
+GBrdatafbestmodf <- h2o.getModel(GBrdatafbestmodid)
+
+# Now let’s get performance metrics on the best model
+h2o.performance(model = GBrdatafbestmodf, xval = TRUE)
+```
+
+
+```{r}
+library(recipes)
+GBrdatafxgbprep <- recipe(Failure.binary ~ ., data = GBrdatatrain) %>%
+  step_integer(all_nominal()) %>%
+  prep(training = GBrdatatrain, retain = TRUE) %>%
+  juice()
+
+GBrdatafX <- as.matrix(GBrdatafxgbprep[setdiff(names(GBrdatafxgbprep), "Failure.binary")])
+GBrdatafY <- GBrdatafxgbprep$Failure.binary
+GBrdatafY=as.numeric(GBrdatafY)-1
+```
+
+
+```{r}
+set.seed(123)
+GBrdatafamesxgb <- xgb.cv(
+  data = GBrdatafX,
+  label = GBrdatafY,
+  nrounds = 2500,
+  objective = "binary:logistic",
+  early_stopping_rounds = 50, 
+  nfold = 10,
+  params = list(
+    eta = 0.1,
+    max_depth = 3,
+    min_child_weight = 3,
+    subsample = 0.8,
+    colsample_bytree = 1.0),
+  verbose = 0
+)
+
+```
+
+
+```{r}
+# minimum test CV RMSE
+min(GBrdatafamesxgb$evaluation_log$test_logloss_mean)
+```
+
+
+```{r}
+# hyperparameter grid
+GBrdataHyperGrid <- expand.grid(
+  eta = 0.01,
+  max_depth = 3, 
+  min_child_weight = 3,
+  subsample = 0.5, 
+  colsample_bytree = 0.5,
+  gamma = c(0, 1, 10, 100, 1000),
+  lambda = c(0, 1e-2, 0.1, 1, 100, 1000, 10000),
+  alpha = c(0, 1e-2, 0.1, 1, 100, 1000, 10000),
+  logloss = 0,          # a place to dump RMSE results
+  trees = 0          # a place to dump required number of trees
+)
+
+# grid search
+for(i in seq_len(nrow(GBrdataHyperGrid))) {
+  set.seed(123)
+  GBrdatafm <- xgb.cv(
+    data = GBrdatafX,
+    label = GBrdatafY,
+    nrounds = 100,#supposedly 4000
+    objective = "binary:logistic",
+    early_stopping_rounds = 50, 
+    nfold = 10,
+    verbose = 0,
+    params = list( 
+      eta = GBrdataHyperGrid$eta[i], 
+      max_depth = GBrdataHyperGrid$max_depth[i],
+      min_child_weight = GBrdataHyperGrid$min_child_weight[i],
+      subsample = GBrdataHyperGrid$subsample[i],
+      colsample_bytree = GBrdataHyperGrid$colsample_bytree[i],
+      gamma = GBrdataHyperGrid$gamma[i], 
+      lambda = GBrdataHyperGrid$lambda[i], 
+      alpha = GBrdataHyperGrid$alpha[i]
+    ) 
+  )
+  GBrdataHyperGrid$logloss[i] <- min(GBrdatafm$evaluation_log$test_logloss_mean)
+  GBrdataHyperGrid$trees[i] <- GBrdatafm$best_iteration
+}
+```
+
+
+```{r}
+# results
+GBrdataHyperGrid %>%
+  filter(logloss > 0) %>%
+  arrange(logloss) %>%
+  glimpse()
+```
+
+
+```{r}
+# optimal parameter list
+params <- list(
+  eta = 0.01,
+  max_depth = 3,
+  min_child_weight = 3,
+  subsample = 0.5,
+  colsample_bytree = 0.5
+)
+```
+
+
+```{r}
+# 
+# # train final model
+# GBrdatatrain$Institution=fct_recode(GBrdatatrain$Institution, "1" = "A", "2" ="B","3"="C","4"="D")
+# GBrdatatrain$Institution=as.numeric(GBrdatatrain$Institution)
+# GBrdatatrain=as.matrix(GBrdatatrain)
+
+xgb.fit.final <- xgboost(
+  params = params,
+  data = GBrdatafX,
+  label = GBrdatafY,
+  nrounds = 3944,
+  objective = "binary:logistic",
+  verbose = 0
+)
+```
+
+```{r}
+# Compute predicted probabilities on training data
+GBrdatafmod1prob <- predict(xgb.fit.final, GBrdatafX, type = "prob")
+
+# Compute AUC metrics for cv_model1,2 and 3 
+GBrdatafperf1 <- prediction(GBrdatafmod1prob,GBrdatatrain$Failure.binary) %>%
+  performance(measure = "tpr", x.measure = "fpr")
+
+
+# Plot ROC curves for cv_model1,2 and 3 
+plot(GBrdatafperf1, col = "black", lty = 2)
+
+
+# ROC plot for training data
+roc( GBrdatatrain$Failure.binary ~ GBrdatafmod1prob, plot=TRUE, legacy.axes=FALSE, 
+    percent=TRUE, col="black", lwd=2, print.auc=TRUE)
+
+GBrdatafxgbprep <- recipe(Failure.binary ~ ., data = GBrdatatest) %>%
+  step_integer(all_nominal()) %>%
+  prep(training = GBrdatatest, retain = TRUE) %>%
+  juice()
+
+GBrdatafX <- as.matrix(GBrdatafxgbprep[setdiff(names(GBrdatafxgbprep), "Failure.binary")])
+
+# Compute predicted probabilities on training data
+GBrdatafmod2prob <- predict(xgb.fit.final, GBrdatafX, type = "prob")
+
+# Compute AUC metrics for cv_model1,2 and 3 
+GBrdatafperf2 <- prediction(GBrdatafmod2prob,GBrdatatest$Failure.binary) %>%
+  performance(measure = "tpr", x.measure = "fpr")
+
+
+# Plot ROC curves for cv_model1,2 and 3 
+plot(GBrdatafperf2, col = "black", lty = 2)
+
+
+# ROC plot for training data
+roc( GBrdatatest$Failure.binary ~ GBrdatafmod2prob, plot=TRUE, legacy.axes=FALSE, 
+    percent=TRUE, col="black", lwd=2, print.auc=TRUE)
+
+```
+
+
+
+```{r}
+# variable importance plot
+vip::vip(xgb.fit.final,num_features=20) 
+```
+
+
+
+
+
+
+
+--------_Support Vector Machine_---------
+
+
+
+
+3. SMV (Support Vector Machine)
+
+
+A support vector machine (SVM) is a supervised machine learning model that utilizes classification algorithms for two-group classification problems. After transmitting a SVM model sets of labeled training data for each category, they are capable to classify new text.
+
+```{r}
+# DATA
+SVMrdata<- read.csv("Model1_Final_Project_Data.csv")
+SVMrdata
+```
+
+
+
+We split the data into training data `(80%)` and testing data `(20%)`.
+Also we may tune an SVM model with `train()`function with radial basis kernel using the data *SVMsplitdatatrain* and 10-fold CV.
+
+```{r}
+# Load Failure.binary data
+
+SVMrdata$Failure.binary=as.factor(SVMrdata$Failure.binary)
+
+# Create training (80%) and test (20%) sets
+set.seed(123)  # for reproducibility
+SVMrsplit <- initial_split(SVMrdata, prop = 0.8, strata = "Failure.binary")
+SVMsplitdatatrain <- training(SVMrsplit)
+SVMsplitdatatest  <- testing(SVMrsplit)
+```
+
+
+we use *getModelInfo()* function to extirpate the hyper-parameters from various SVM implementations with distinct kernel functions.
+
+```{r}
+# Linear (i.e., soft margin classifier)
+caret::getModelInfo("svmLinear")$svmLinear$parameters
+
+# Polynomial kernel
+caret::getModelInfo("svmPoly")$svmPoly$parameters
+
+# Radial basis kernel
+caret::getModelInfo("svmRadial")$svmRadial$parameters
+```
+
+### Run SVM Model in Training phase
+
+Using `SVMsplitdatatrain`, we can tune an SVM model with radial basis kernel.
+
+```{r}
+set.seed(1854)  # for reproducibility
+SVMsplitdataff <- train(
+  Failure.binary ~ ., 
+  data = SVMsplitdatatrain,
+  method = "svmRadial",               
+  preProcess = c("center", "scale"),  
+  trControl = trainControl(method = "cv", number = 10),
+  tuneLength = 10
+)
+```
+
+Plotting the results, we can observe that smaller values of the cost parameter `(C ≈ 16–64)` foster better cross-validated accuracy scores to these training data.
+
+```{r}
+# Plot results
+ggplot(SVMsplitdataff) + theme_light()
+
+# Print results
+SVMsplitdataff$results
+```
+
+Control parameter
+
+For us to acquire the predicted class probabilities from an Support vector machine, additional parameters is sessential to be estimated. The predicted class probabilities are often more useful than the predicted class labels. For instance, we would need the predicted class probabilities if we were using an optimization metric like AUC. In that case, we can set `classProbs = TRUE` in the call to `trainControl()`.
+
+```{r}
+class.weights = c("No" = 1, "Yes" = 10)
+
+# Control params for SVM
+SVMtcontrol <- trainControl(
+  method = "cv", 
+  number = 10, 
+  classProbs = TRUE,                 
+  summaryFunction = twoClassSummary  # also needed for AUC/ROC
+)
+
+SVMsplitdatatrain$Failure.binary=fct_recode(SVMsplitdatatrain$Failure.binary,No="0",Yes="1")
+
+```
+
+### Print the AUC values during Training
+
+```{r}
+# Tune an SVM
+set.seed(5628)  # for reproducibility
+SVMtrainauc <- train(
+  Failure.binary ~ ., 
+  data = SVMsplitdatatrain,
+  method = "svmRadial",               
+  preProcess = c("center", "scale"),  
+  metric = "ROC",  # area under ROC curve (AUC)       
+  trControl = SVMtcontrol,
+  tuneLength = 10
+)
+
+# Print results
+SVMtrainauc$results
+confusionMatrix(SVMtrainauc)
+```
+
+Print the Top 20 important features during Training
+To compute the vip scores we just call `vip()` with `method = "permute"` and pass our previously defined predictions wrapper to the `pred_wrapper` argument.
+
+```{r}
+SVMprobay <- function(object, newdata) {
+  predict(object, newdata = newdata, type = "prob")[, "Yes"]
+}
+
+# Variable importance plot
+set.seed(2827)  # for reproducibility
+vip(SVMtrainauc, method = "permute", nsim = 5, train = SVMsplitdatatrain, 
+    target = "Failure.binary", metric = "auc", reference_class = "Yes", 
+    pred_wrapper = SVMprobay)
+```
+
+
+```{r}
+SVMfeatures <- setdiff(names(SVMrdata), names(SVMrdata)[c(1,2)])
+SVMrpdps <- lapply(SVMfeatures, function(x) {
+  partial(SVMtrainauc, pred.var = x, which.class = 2,  
+          prob = TRUE, plot = TRUE, plot.engine = "ggplot2") +
+    coord_flip()
+})
+
+grid.arrange(grobs = SVMrpdps,  ncol = 2) 
+```
+ 
+### Print the AUC values during Testing
+
+```{r}
+SVMsplitdatatest$Failure.binary=fct_recode(SVMsplitdatatest$Failure.binary,No="0",Yes="1")
+
+# Tune an SVM with radial 
+set.seed(5628)  # for reproducibility
+SVMtestauc <- train(
+  Failure.binary ~ ., 
+  data = SVMsplitdatatest,
+  method = "svmRadial",               
+  preProcess = c("center", "scale"),  
+  metric = "ROC",  # area under ROC curve (AUC)       
+  trControl = SVMtcontrol,
+  tuneLength = 10
+)
+
+# Print results
+SVMtestauc$results
+confusionMatrix(SVMtestauc)
+```
