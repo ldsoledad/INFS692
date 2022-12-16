@@ -1,0 +1,368 @@
+---
+title: "Model 3"
+author: "Leonard Dwight Soledad"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Helper Packages And Modeling Packages
+```{r}
+# Load Helper Packages
+library(dplyr)    
+library(ggplot2)   
+library(stringr)  
+library(gridExtra)
+library(readr)
+library(bestNormalize)
+
+# Load Modeling Packages
+library(cluster)    
+library(factoextra)
+library(tidyverse)
+library(mclust)
+
+```
+
+*CLUSTERING TECHNIQUES*
+
+In this model, we will execute and differentiate the clustering techniques results from K-Means, Hierarchical and Model based clustering disregarding the binary output and categorical variables in the data set. We will start by normalizing the data *"radiomics_completedata"*.
+
+
+
+#     Loading the Data
+#     The data contains 197 rows and 431 columns with *Failure.binary* binary output.
+```{r}
+
+Model3Arawdata <- read_csv("radiomics_completedata.csv")
+Model3Arawdata
+```
+
+
+#       *Data Reprocessing*
+
+
+#   Checking for null and missing values
+#   We are using *anyNA()* function to determine if there is any missing value in the data.
+```{r}
+
+anyNA(Model3Arawdata)
+
+#The output will show either *True* or *False*. There are missing values If True, thus you have to omit the missing values using *na.omit()*. Otherwise, False.
+  
+#[1] FALSE
+
+# The result is False, hence, the data has no missing values.
+```
+
+*Checking the Normality of the Data*
+We are using *Shapiro-Wilk's Test* to check the normality of the data.
+
+```{r,warning=F}
+
+Model3Anumrawdata <- Model3Arawdata%>%select_if(is.numeric) 
+
+Model3Anumrawdata <- Model3Anumrawdata[ , -1]
+
+Model3ASWtest <- apply(Model3Anumrawdata, 2, function(x){shapiro.test(x)})
+```
+
+
+Next we need to list only the p-value of the respective variables to proceed with the test. We are using the *unlist()* and *lapply()* functions to achieve this goal.
+
+```{r}
+
+Model3ADRpvalue <- unlist(lapply(Model3ASWtest, function(x) x$p.value))
+
+```
+
+
+```{r}
+
+sum(Model3ADRpvalue<0.05)  # not normally distributed
+sum(Model3ADRpvalue>0.05)  # normally distributed
+Model3ASWtest$Entropy_cooc.W.ADC
+
+# [1] 428
+# [1] 1
+
+#  Currently, there are 428 variables that are not normally distributed and only the Entropy_cooc.W.ADC is normally distributed.
+```
+
+The goal is that all variables should be normally distributed.
+Next, we are using *orderNorm()* function. And we need to exclude the *Entropy_cooc.W.ADC* since it is already normally distributed.
+
+```{r,warning=F}
+Model3ADRtransrawdata <- Model3Arawdata[,c(3,5:length(names(Model3Arawdata)))]
+
+Model3ADRtransrawdata <- apply(Model3ADRtransrawdata,2,orderNorm)
+
+Model3ADRtransrawdata <- lapply(Model3ADRtransrawdata, function(x) x$x.t)
+
+Model3ADRtransrawdata <- Model3ADRtransrawdata%>%as.data.frame()
+
+Model3ASWtest <- apply(Model3ADRtransrawdata,2,shapiro.test)
+
+Model3ASWtest <- unlist(lapply(Model3ASWtest, function(x) x$p.value))
+```
+
+Next, we will be testing the data to check the normality or the transformed data.
+```{r,warning=F}
+sum(Model3ASWtest <0.05)  # for not normally distributed
+sum(Model3ASWtest >0.05)  # for normally distributed
+
+#[1] 0
+#[1] 428
+
+# Now, the 428 variables that were initially not normally distributed are now normally distributed.
+```
+
+
+```{r}
+
+Model3Arawdata[,c(3,5:length(names(Model3Arawdata)))]=Model3ADRtransrawdata
+
+```
+
+We are getting the correlation of the whole data except the categorical variables
+```{r}
+
+Model3ACorrMat = cor(Model3Arawdata[,-c(1,2)])
+heatmap(Model3ACorrMat,Rowv=NA,Colv=NA,scale="none",revC = T)
+
+```
+
+Finally, we will convert the data frame output of data reprocessing into "csv" file, which will we use for the entire Final Project.
+
+```{r}
+library(data.table)
+
+fwrite(Model3Arawdata, "Model3_Final_Project_Data.csv")
+```
+
+Lastly, let's check if the dataframe we have exported to CSV is really the normal data.
+```{r}
+Model3Arawdata1 <- read_csv("Model3_Final_Project_Data.csv")
+Model3Arawdata1
+
+Model3Anumrawdata1 <- Model3Arawdata1%>%select_if(is.numeric) 
+
+Model3Anumrawdata1 <- Model3Anumrawdata1[ , -1]
+
+Model3ASWtest1 <- apply(Model3Anumrawdata1, 2, function(y){shapiro.test(y)})
+
+Model3ADRpvalue1 <- unlist(lapply(Model3ASWtest1, function(y) y$p.value))
+
+sum(Model3ADRpvalue1<0.05)  # not normally distributed
+sum(Model3ADRpvalue1>0.05)  # normally distributed
+
+#Yes! We were able to produce the correct CSV file and we are now ready to use it for the entire project.
+```
+
+
+
+**MODEL 3**
+
+```{r}
+
+# Load the dataset
+model3data <- read_csv("Model3_Final_Project_Data.csv")
+model3data
+```
+
+# Scaling/Standardizing the Data
+```{r}
+model3fdata <- scale(model3data[c(3:431)])
+head(model3fdata)
+sum(is.na(model3fdata))
+```
+
+
+1. K-Means Clustering
+
+K-Means Clustering is one of the most well-known and commonly used clustering algorithms for partitioning observations into a set of k groups. 
+
+The primary objective of k-means clustering is to make clusters within-cluster variation that is minimized. We will perform K-means clustering with 3 clusters, 100 maximum number of iterations, and 100 n start. 
+
+
+_____***K-MEANS CLUSTERING***______
+
+```{r}
+dataclust <- kmeans(model3fdata, centers = 3, iter.max = 100, nstart = 100)
+```
+
+Also, we need to determine and visualize optimal number of clusters.
+
+Another method to ascertain the most favorable value of the K number of clusters is by using *Within Sum of Squares*, *Silhouette* and *gap_stat* plots. This advise us with 2 clusters.
+To plot the 2 clusters, we can use *fviz_cluster()* function.
+
+```{r}
+fviz_nbclust(model3fdata, kmeans, method = "wss") 
+fviz_nbclust(model3fdata, kmeans, method = "silhouette")
+fviz_nbclust(model3fdata, kmeans, method = "gap_stat") 
+
+dataclust <- kmeans(model3fdata, centers = 2, iter.max = 100, nstart = 100)
+fviz_cluster(kmeans(model3fdata, centers = 2, iter.max = 100, nstart = 100), data = model3fdata)
+```
+
+
+The quality of the k-means partition is gauged by the **SSwithin**, and we want it to be as little as possible. Hence, we have 33.2%.
+```{r}
+dataclust$betweenss / dataclust$totss
+```
+
+
+Lastly, we can visualize clusters using the original variables where **x is Failure** and **y is Entropy_cooc.W.ADC**
+
+```{r}
+dataclust <- kmeans(model3fdata, centers = 3, iter.max = 100, nstart = 100)
+model3data <- model3data |> mutate(cluster = dataclust$cluster)
+model3data |> ggplot(aes(x = Failure, y = Entropy_cooc.W.ADC, col = as.factor(cluster))) + geom_point()
+```
+
+
+2.Hierarchical Clustering
+
+
+In identifying the groupings in a data set, hierarchical clustering is a backup alternative to k-means clustering. Unlike k-means, in hierarchical clustering the number of clusters does not need to be preset, since this method can build hierarchy of clusters.
+
+
+Also, before building a clustering model, a standardization of the data is prerequisite.
+```{r}
+fdata <- model3data%>%
+  select_if(is.numeric) %>%  # select numeric columns
+  select(-Failure.binary) %>%    # remove target column
+  mutate_all(as.double) %>%  # coerce to double type
+  scale()
+
+
+```
+
+# Hierarchical clustering using Complete Linkage
+
+Resembling to k-means, we evaluate first the dissimilarity of observations using distance measures to get the agglomeration coefficient (AC). For us to sustain these values and specify the agglomeration method to be used either *"complete", "average", "single", or "ward.D2"*, is by using *hclust() function*.
+```{r}
+cdata <- dist(fdata, method = "euclidean") #dissimiliraty matrix
+
+heirclustA <- hclust(cdata, method = "complete")
+plot(heirclustA, cex = 0.6)
+rect.hclust(heirclustA, k = 2, border = 1:4)
+```
+
+**AGNES**
+
+We can also use agnes() function.
+```{r}
+set.seed(123)
+heirclustB <- agnes(fdata, method = "complete")
+heirclustB$ac
+```
+
+**DIANA**
+```{r}
+heirclustC <- diana(fdata)
+heirclustC$dc
+
+dianaA <- fviz_nbclust(fdata, FUN = hcut, method = "wss", 
+                   k.max = 10) +
+  ggtitle("(A) Elbow method")
+dianaB <- fviz_nbclust(fdata, FUN = hcut, method = "silhouette", 
+                   k.max = 10) +
+  ggtitle("(B) Silhouette method")
+dianaC <- fviz_nbclust(fdata, FUN = hcut, method = "gap_stat", 
+                   k.max = 10) +
+  ggtitle("(C) Gap statistic")
+gridExtra::grid.arrange(dianaA, dianaB, dianaC, nrow = 1)
+```
+
+**Ward's method**
+```{r}
+heirclustD <- hclust(cdata, method = "ward.D2" )
+resgroup <- cutree(heirclustD, k = 8)
+table(resgroup)
+```
+
+
+3.Model Based
+
+Next is model-based clustering. Unlike the previous clustering methods, model-based clustering automatically ascertains the favorable number of clusters. Also, the Gaussian mixture models is applied.
+
+
+We may use the **Mclust() function*, which will leave *G = NULL* to necessitate the Mclust() to evaluate 1–9 clusters and select the optimal number of components based on BIC. 
+
+```{r}
+modelB1 <- Mclust(model3fdata[,1:10], G=3) 
+summary(modelB1)
+modelB2 = Mclust(model3fdata, 1:9) #from sir lecture 
+
+#Error in plot.new() : figure margins too large
+summary(modelB2)
+
+```
+
+# Plot results
+```{r}
+plot(modelB1, what = "density") #cannot plot 1:428 #dugay pag 1:10
+plot(modelB1, what = "uncertainty")
+```
+
+
+```{r}
+legargs <- list(x = "bottomright", ncol = 5)
+plot(modelB1, what = 'BIC', legendArgs = legargs)
+plot(modelB1, what = 'classification')
+plot(modelB1, what = 'uncertainty')
+```
+
+
+```{r}
+prbblts <- modelB1$z 
+colnames(prbblts) <- paste0('C', 1:3)
+
+prbblts <- prbblts %>%
+  as.data.frame() %>%
+  mutate(id = row_number()) %>%
+  tidyr::gather(cluster, probability, -id)
+
+ggplot(prbblts, aes(probability)) +
+  geom_histogram() +
+  facet_wrap(~ cluster, nrow = 2)
+```
+
+
+```{r}
+uncertainty <- data.frame(
+  id = 1:nrow(model3fdata),
+  dataficlust = modelB1$classification,
+  uncertainty = modelB1$uncertainty
+)
+uncertainty %>%
+  group_by(dataficlust) %>%
+  filter(uncertainty > 0.25) %>%
+  ggplot(aes(uncertainty, reorder(id, uncertainty))) +
+  geom_point() +
+  facet_wrap(~ dataficlust, scales = 'free_y', nrow = 1)
+```
+
+
+```{r}
+dataficlustB <- model3fdata %>%
+  scale() %>%
+  as.data.frame() %>%
+  mutate(cluster = modelB1$classification) %>%
+  filter(cluster == 2) %>%
+  select(-cluster)
+
+dataficlustB %>%
+  tidyr::gather(product, std_count) %>%
+  group_by(product) %>%
+  summarize(avg = mean(std_count)) %>%
+  ggplot(aes(avg, reorder(product, avg))) +
+  geom_point() +
+  labs(x = "Average standardized consumption", y = NULL)
+```
+
+**Conclusion**
+
+By the results we can, therefore say that, using k-means clustering the best number of clusters is 2 with SSwithin = 33.2%. Also Hierarchical, gap statistics suggest 9 clusters with 84.90% AC and 84.29%. Lastly, model-based suggest 3 optimal number of clusters with BIC -2632.206.

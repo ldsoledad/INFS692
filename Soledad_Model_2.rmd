@@ -1,0 +1,261 @@
+---
+title: "MODEL 2"
+author: "Leonard Dwight Soledad"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+#     Loading the Data
+#     The data contains 197 rows and 431 columns with *Failure.binary* binary output.
+```{r}
+library(readr)
+
+Model2rawdata <- read_csv("radiomics_completedata.csv")
+Model2rawdata
+```
+
+
+#       *Data Reprocessing*
+```{r}
+library(tidyverse)
+library(bestNormalize)
+```
+
+
+#   Checking for null and missing values
+#   We are using *anyNA()* function to determine if there is any missing value in the data.
+```{r}
+
+anyNA(Model2rawdata)
+
+#The output will show either *True* or *False*. There are missing values If True, thus you have to omit the missing values using *na.omit()*. Otherwise, False.
+  
+#[1] FALSE
+
+# The result is False, hence, the data has no missing values.
+```
+
+*Checking the Normality of the Data*
+We are using *Shapiro-Wilk's Test* to check the normality of the data.
+
+```{r,warning=F}
+
+Model2numrawdata <- Model2rawdata%>%select_if(is.numeric) 
+
+Model2numrawdata <- Model2numrawdata[ , -1]
+
+Model2SWtest <- apply(Model2numrawdata, 2, function(x){shapiro.test(x)})
+```
+
+
+Next we need to list only the p-value of the respective variables to proceed with the test. We are using the *unlist()* and *lapply()* functions to achieve this goal.
+
+```{r}
+
+Model2DRpvalue <- unlist(lapply(Model2SWtest, function(x) x$p.value))
+
+```
+
+
+```{r}
+
+sum(Model2DRpvalue<0.05)  # not normally distributed
+sum(Model2DRpvalue>0.05)  # normally distributed
+Model2SWtest$Entropy_cooc.W.ADC
+
+# [1] 428
+# [1] 1
+
+#  Currently, there are 428 variables that are not normally distributed and only the Entropy_cooc.W.ADC is normally distributed.
+```
+
+The goal is that all variables should be normally distributed.
+Next, we are using *orderNorm()* function. And we need to exclude the *Entropy_cooc.W.ADC* since it is already normally distributed.
+
+```{r,warning=F}
+Model2DRtransrawdata <- Model2rawdata[,c(3,5:length(names(Model2rawdata)))]
+
+Model2DRtransrawdata <- apply(Model2DRtransrawdata,2,orderNorm)
+
+Model2DRtransrawdata <- lapply(Model2DRtransrawdata, function(x) x$x.t)
+
+Model2DRtransrawdata <- Model2DRtransrawdata%>%as.data.frame()
+
+Model2SWtest <- apply(Model2DRtransrawdata,2,shapiro.test)
+
+Model2SWtest <- unlist(lapply(Model2SWtest, function(x) x$p.value))
+```
+
+Next, we will be testing the data to check the normality or the transformed data.
+```{r,warning=F}
+sum(Model2SWtest <0.05)  # for not normally distributed
+sum(Model2SWtest >0.05)  # for normally distributed
+
+#[1] 0
+#[1] 428
+
+# Now, the 428 variables that were initially not normally distributed are now normally distributed.
+```
+
+
+```{r}
+
+Model2rawdata[,c(3,5:length(names(Model2rawdata)))] = Model2DRtransrawdata
+
+```
+
+We are getting the correlation of the whole data except the categorical variables
+```{r}
+
+Model2CorrMat = cor(Model2rawdata[,-c(1,2)])
+heatmap(Model2CorrMat,Rowv=NA,Colv=NA,scale="none",revC = T)
+
+```
+
+Finally, we will convert the data frame output of data reprocessing into "csv" file, which will we use for the entire model.
+
+```{r}
+library(data.table)
+
+fwrite(Model2rawdata, "Model2_Final_Project_Data.csv")
+```
+
+Lastly, let's check if the dataframe we have exported to CSV is really the normal data.
+```{r}
+Model2rawdata1 <- read_csv("Model2_Final_Project_Data.csv")
+Model2rawdata1
+
+Model2numrawdata1 <- Model2rawdata1%>%select_if(is.numeric) 
+
+Model2numrawdata1 <- Model2numrawdata1[ , -1]
+
+Model2SWtest1 <- apply(Model2numrawdata1, 2, function(y){shapiro.test(y)})
+
+Model2DRpvalue1 <- unlist(lapply(Model2SWtest1, function(y) y$p.value))
+
+sum(Model2DRpvalue1<0.05)  # not normally distributed
+sum(Model2DRpvalue1>0.05)  # normally distributed
+
+```
+
+Yes! We were able to produce the correct CSV file and we are now ready to use it for the entire Neural Networking Base Model.
+
+
+
+
+*******************NEURAL NETWORKING BASE**********************
+
+
+# Helper Packages AND  Model Packages
+```{r}
+library(dplyr)
+library(keras)
+library(tfruns) 
+library(rsample) 
+library(tfestimators)
+
+
+```
+
+Recall that the data *Final_Project_Data.csv* is the output of our data reprocessing, and we noted it to be the data that we will be using for the entire project.
+
+```{r}
+Model2Data <- read_csv("Model2_Final_Project_Data.csv")
+```
+
+
+Split the data into training *(80%)* and testing *(20%)*. 
+
+```{r}
+Model2Data <- Model2Data %>%
+  mutate(Failure.binary=ifelse(Failure.binary== "No",0,1))
+
+
+set.seed(123)
+
+snorm <- initial_split(Model2Data,prop = 0.8 ,strata = "Failure.binary")
+normrtrain <- training(snorm)
+normrtest  <- testing(snorm)
+
+Model2dataXtrain <- normrtrain[,-c(1,2)]%>%as.matrix.data.frame()
+Model2dataXtest <- normrtest[,-c(1,2)]%>%as.matrix.data.frame()
+
+Model2dataYtrain <- normrtrain$Failure.binary
+Model2dataYtest <- normrtest$Failure.binary
+
+```
+
+
+
+*Reshaping** the data set and then run the model. We are going to use *keras_model_sequential()* of the keras package. This will allow us to make the network with a layering technique. As instructed we need to make five hidden layers with 256, 128, 128, 64, and 64 neurons, respectively with activation functions of *Sigmoid* over fitting 2 neurons for the output layer with activation function *Softmax*. Also, to avoid over fitting, each layer is followed by a dropout.
+
+
+```{r}
+Model2dataXtrain <- array_reshape(Model2dataXtrain, c(nrow(Model2dataXtrain), ncol(Model2dataXtrain)))
+Model2dataXtrain <- Model2dataXtrain 
+
+Model2dataXtest <- array_reshape(Model2dataXtest, c(nrow(Model2dataXtest), ncol(Model2dataXtest)))
+Model2dataXtest <- Model2dataXtest 
+
+Model2dataYtrain <- to_categorical(Model2dataYtrain, num_classes = 2)
+Model2dataYtest <- to_categorical(Model2dataYtest, num_classes = 2)
+
+Model2model <- keras_model_sequential() %>%
+  layer_dense(units = 256, activation = "sigmoid", input_shape = c(ncol(Model2dataXtrain))) %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 128, activation = "sigmoid") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 128, activation = "sigmoid") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 64, activation = "sigmoid") %>% 
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 64, activation = "sigmoid") %>% 
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 2, activation = "softmax")
+```
+
+# Backpropagation
+```{r, eval=FALSE}
+ compile(
+    loss = "categorical_crossentropy",
+    optimizer = optimizer_rmsprop(),
+    metrics = c("accuracy")
+  )
+```
+
+
+# Backpropagation Compiler Approach and train the model
+
+Once we have already built a fundamental model; what remains is to sustain it with some data to train on. For us to accomplish this, we render our training data and model into a *fit()*. function. 
+
+Epoch denotes the number of views of the algorithm to the entire data set. Hence, the epoch will end once all of the samples in the data set had already been inspected by the algorithm. Also, we need to segregate it in smaller portions, since an isolated epoch will be too large to transmit to the computer all at once.
+
+```{r}
+ Model2model %>% compile(
+  loss = "categorical_crossentropy",
+  optimizer = optimizer_adam(),
+  metrics = c("accuracy")
+)
+
+Model2history <- Model2model %>% 
+  fit(Model2dataXtrain, Model2dataYtrain, epochs = 10, batch_size = 128, validation_split = 0.15)
+Model2history
+plot(Model2history)
+```
+
+***Evaluate the trained model using testing data set.***
+
+```{r}
+Model2model %>%
+  evaluate(Model2dataXtest, Model2dataYtest)
+dim(Model2dataXtest)
+dim(Model2dataYtest)
+```
+
+***Model prediction***
+```{r}
+Model2model   %>% predict(Model2dataXtest) %>% `>`(0.8) %>% k_cast("int32")
+```
